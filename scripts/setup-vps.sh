@@ -22,7 +22,7 @@ REPO=https://github.com/waqaarhussain/AmberSight.git
 export DEBIAN_FRONTEND=noninteractive
 printf '\nInstalling prerequisites...\n'
 apt-get update
-apt-get install -y ca-certificates curl git
+apt-get install -y ca-certificates curl git python3 python3-argon2 python3-tomlkit
 
 if ! command -v docker >/dev/null 2>&1; then
     # Never uninstall another container runtime automatically.
@@ -74,8 +74,12 @@ compose=(docker compose --project-name ambersight-vps --env-file "$BASE/vps.env"
 "${compose[@]}" config --quiet
 printf '\nBuilding AmberSight. The initial Rust build can take a while...\n'
 "${compose[@]}" build
-# The running container is replaced only after a successful build.
-"${compose[@]}" up -d --remove-orphans
+# Stop only after a successful build, then write auth before any public listener.
+# Use Ubuntu's Python explicitly, since the packages are installed for it.
+"${compose[@]}" stop
+/usr/bin/python3 "$APP/scripts/configure-vps.py" prepare "$BASE/config/config.toml" "$BASE/vps.env" --template "$APP/config.example.toml"
+# Start restricted to loopback until the authentication check passes.
+AMBERSIGHT_BIND_IP=127.0.0.1 "${compose[@]}" up -d --remove-orphans
 
 cat > /usr/local/bin/ambersight-vps <<'HELPER'
 #!/usr/bin/env bash
@@ -88,9 +92,10 @@ chmod 0755 /usr/local/bin/ambersight-vps
 printf '\nWaiting for the web server...\n'
 ready=false
 for ((attempt=0; attempt<60; attempt++)); do
-    # Check inside the container, so changing its host bind address or enabling
-    # HTTPS later does not make an otherwise working update appear broken.
-    if "${compose[@]}" exec -T ambersight bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090' 2>/dev/null; then
+    # Trust the CA generated locally by this app, and require unauthenticated
+    # camera access to be refused before publishing the port.
+    code=$(curl --silent --show-error --max-time 3 --cacert "$BASE/data/tls/ca.pem" -o /dev/null -w '%{http_code}' https://localhost:8090/api/cameras 2>/dev/null || true)
+    if [[ $code == 401 ]]; then
         ready=true
         break
     fi
@@ -98,21 +103,23 @@ for ((attempt=0; attempt<60; attempt++)); do
 done
 if [[ $ready != true ]]; then
     "${compose[@]}" ps
-    fail 'The web port did not become ready. Check: sudo ambersight-vps logs --tail 100'
+    fail 'HTTPS/authentication check failed. Public access stays restricted. Check: sudo ambersight-vps logs --tail 100'
 fi
 
+/usr/bin/python3 "$APP/scripts/configure-vps.py" publish "$BASE/config/config.toml" "$BASE/vps.env"
+AMBERSIGHT_BIND_IP=0.0.0.0 "${compose[@]}" up -d
+public_ip=$(sed -n 's/^AMBERSIGHT_PUBLIC_IP=//p' "$BASE/vps.env")
+printf '\nOpen https://%s:8090 in your browser. Username: waqaar\n' "$public_ip"
 cat <<'DONE'
 
 AmberSight is running. The original UI is unchanged.
 
-First access, from PowerShell/Terminal on your own computer:
-  ssh -N -L 18090:127.0.0.1:8090 YOUR_SSH_USER@YOUR_VPS_IP
-Leave that window open, then browse to http://localhost:18090
-(If you already enabled AmberSight HTTPS, use https://localhost:18090.)
-
-Create your account under Settings > Users & security before adding cameras.
-The dashboard is initially bound to localhost, so it is not publicly exposed.
-If vps.env was changed previously, its existing bind address is preserved.
+Sign in as waqaar using the password you entered during setup.
+No SSH tunnel is needed. HTTPS and authentication are enabled before public access.
+AmberSight uses its own certificate authority. Your browser will warn until you
+trust its certificate; verify it is your server before entering your password.
+If the page times out, allow inbound TCP 8090 in your VPS provider firewall.
+Existing waqaar passwords are preserved when rerunning the installer.
 
 Settings:   /opt/ambersight/config
 Recordings: /opt/ambersight/data

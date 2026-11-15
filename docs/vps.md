@@ -19,7 +19,13 @@ reused when Compose v2 is available. Other container packages are never removed
 automatically. The first build needs free disk and memory for Rust compilation;
 out-of-memory build failures require more memory or administrator-managed swap.
 
+After the build, setup prompts privately for waqaar's password and confirmation.
+Use at least 12 characters. The password is hashed with Argon2 before it is
+written to config.toml; it is never sent to GitHub or placed in process arguments.
+Ubuntu's python3-argon2 and python3-tomlkit packages provide the bootstrap tools.
+
 Re-running updates this checkout from its own master branch and rebuilds.
+An existing waqaar password hash is preserved, so updates do not prompt again.
 Uncommitted local source edits or a divergent branch stop the update.
 Settings, users and recordings are kept outside the source checkout:
 
@@ -28,31 +34,42 @@ Settings, users and recordings are kept outside the source checkout:
 | `/opt/ambersight/app` | Source |
 | `/opt/ambersight/config` | Application config and camera credentials |
 | `/opt/ambersight/data` | Database, recordings, models and backups |
-| `/opt/ambersight/vps.env` | Dashboard host bind address and timezone |
+| `/opt/ambersight/vps.env` | Dashboard host bind address, public IP and timezone |
 
 ## First access
 
-Run this on your own computer, replacing the SSH user and VPS IP:
+After setup, open the address printed by the installer:
 
-```bash
-ssh -N -L 18090:127.0.0.1:8090 YOUR_SSH_USER@YOUR_VPS_IP
+```text
+https://YOUR_VPS_IP:8090
 ```
 
-Leave it open and visit http://localhost:18090. Add an administrator under
-Settings > Users & security. AmberSight initially has no accounts, so the
-installer publishes its web port only on the VPS loopback address.
-If you enable AmberSight HTTPS later, visit https://localhost:18090 and follow
-the upstream install guide for trusting its private certificate authority.
+Sign in as **waqaar** using the password you entered on the VPS. No SSH tunnel
+is needed. Existing accounts, camera settings and recordings are retained.
+The installer enables HTTPS and checks that unauthenticated camera access is
+refused while bound to localhost. It publishes port 8090 on all IPv4 interfaces
+only after that check succeeds. Setup briefly stops an existing container after
+the build to safely update configuration. A failed authentication check leaves
+the listener restricted to localhost.
+
+AmberSight creates its own private certificate authority. Your browser shows a
+certificate warning until you trust its certificate. Verify you are connecting
+to your own VPS; follow docs/install.md for trusting the server. The public IP
+is added to the certificate names before the first HTTPS start. For a NAT VPS,
+setup may query https://api.ipify.org to discover its public IPv4 address; if
+discovery fails, it asks you to enter the IP. Later installs reuse the saved IP.
+If you already used HTTPS with a CA limited to different names, the existing
+CA is preserved; see the upstream HTTPS guide before changing its trust limits.
+
+If the page times out, allow inbound TCP 8090 in the VPS provider firewall.
 
 The timezone defaults to Europe/London. Edit vps.env and run
-`sudo ambersight-vps up -d` to apply deployment settings. A pre-existing env
-file and application config are never overwritten by the installer.
-
-For ongoing private access, connect your computer and VPS through a VPN, then
-bind to the VPS VPN IPv4 address in vps.env instead of 127.0.0.1. Create your
-account first. Do not use 0.0.0.0 for an unprotected public dashboard. A public
-domain needs a separately configured HTTPS reverse proxy and the appropriate
-trusted_proxies setting documented in docs/docker.md.
+`sudo ambersight-vps up -d` to apply deployment settings. The installer keeps
+other deployment settings but sets the host bind address to 0.0.0.0 for direct
+IP access after every successful authentication check. It keeps the application
+config's other sections and creates config.toml.before-vps before changing it.
+To use a domain with a public HTTPS certificate, configure a reverse proxy and
+the appropriate trusted_proxies setting documented in docs/docker.md.
 
 ## Reolink NVR
 

@@ -88,7 +88,7 @@ def password_hash():
                 return PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1).hash(first)
 
 
-def prepare(config, template, env_file):
+def prepare(config, template, env_file, native=False, uid=1000, gid=1000):
     original = config.read_text() if config.exists() else template.read_text()
     doc = tomlkit.parse(original)
     server = doc.setdefault("server", tomlkit.table())
@@ -117,16 +117,34 @@ def prepare(config, template, env_file):
     # The template's relative data folder is for native installs, not this container.
     if not config.exists():
         doc["storage"]["data_dir"] = "/data"
+    if native:
+        # Translate the standard bind mounts to their actual host locations.
+        base = config.parent.parent
+        def translate(value):
+            if isinstance(value, str):
+                for prefix, host in [("/data", base / "data"), ("/config", config.parent)]:
+                    if value == prefix or value.startswith(prefix + "/"):
+                        return str(host) + value[len(prefix):]
+                return value
+            if isinstance(value, dict):
+                for key in list(value):
+                    value[key] = translate(value[key])
+            elif isinstance(value, list):
+                for index in range(len(value)):
+                    value[index] = translate(value[index])
+            return value
+        translate(doc)
+        server["bind"] = "127.0.0.1"
     rendered = tomlkit.dumps(doc)
     tomlkit.parse(rendered)
     if config.exists() and rendered != original:
-        atomic_write(config.with_name("config.toml.before-vps"), original)
-    atomic_write(config, rendered)
+        atomic_write(config.with_name("config.toml.before-vps"), original, uid, gid)
+    atomic_write(config, rendered, uid, gid)
     update_env(env_file, AMBERSIGHT_PUBLIC_IP=address)
     print(f"Login configured: waqaar. Dashboard address: https://{address}:8090")
 
 
-def publish(config, env_file):
+def publish(config, env_file, native=False, uid=1000, gid=1000):
     doc = tomlkit.parse(config.read_text())
     server = doc.get("server", {})
     user = next((u for u in server.get("users", []) if u.get("username") == "waqaar"), {})
@@ -134,11 +152,17 @@ def publish(config, env_file):
             and user.get("admin") and not user.get("disabled", False)):
         raise ValueError("Refusing public access without HTTPS and the configured account.")
     update_env(env_file, AMBERSIGHT_BIND_IP="0.0.0.0")
+    if native:
+        server["bind"] = "0.0.0.0"
+        atomic_write(config, tomlkit.dumps(doc), uid, gid)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["prepare", "publish"])
+    parser.add_argument("--native", action="store_true")
+    parser.add_argument("--uid", type=int, default=1000)
+    parser.add_argument("--gid", type=int, default=1000)
     parser.add_argument("config", type=Path)
     parser.add_argument("env_file", type=Path)
     parser.add_argument("--template", type=Path)
@@ -147,9 +171,9 @@ def main():
         if args.action == "prepare":
             if args.template is None:
                 parser.error("prepare requires --template")
-            prepare(args.config, args.template, args.env_file)
+            prepare(args.config, args.template, args.env_file, args.native, args.uid, args.gid)
         else:
-            publish(args.config, args.env_file)
+            publish(args.config, args.env_file, args.native, args.uid, args.gid)
     except (OSError, ValueError, EOFError, KeyboardInterrupt, getpass.GetPassWarning) as error:
         raise SystemExit(f"VPS configuration stopped: {error}") from None
 

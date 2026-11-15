@@ -1,0 +1,23 @@
+# CPU-only VPS deployment; existing local-network compose.yaml is unchanged.
+services:
+  ambersight:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vps
+    image: ambersight-vps:local
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "${AMBERSIGHT_BIND_IP:-127.0.0.1}:8090:8090"
+    environment:
+      TZ: ${TZ:-Europe/London}
+      PUID: "1000"
+      PGID: "1000"
+    volumes:
+      - /opt/ambersight/config:/config
+      - /opt/ambersight/data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

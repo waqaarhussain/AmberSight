@@ -1,0 +1,24 @@
+# Same application and embedded UI, built for a CPU-only VPS.
+FROM rust:1-trixie AS build
+WORKDIR /src
+COPY . .
+# Limit concurrent compilation to reduce peak memory on small VPSs.
+ENV CARGO_BUILD_JOBS=1
+RUN RUSTFLAGS='--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=~/.cargo' \
+    cargo build --release --locked \
+ && install -m 755 target/release/ambersight /ambersight
+
+FROM debian:trixie-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates tzdata tini fonts-dejavu-core util-linux bash \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 1000 --user-group --home-dir /data --no-create-home ambersight \
+ && mkdir -p /config /data \
+ && chown ambersight:ambersight /config /data
+COPY --from=build /ambersight /usr/local/bin/ambersight
+COPY docker/entrypoint.sh /usr/local/bin/ambersight-entrypoint
+COPY LICENSE THIRD-PARTY-NOTICES.txt /usr/share/doc/ambersight/
+ENV HOME=/data PUID=1000 PGID=1000
+VOLUME ["/config", "/data"]
+EXPOSE 8090
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ambersight-entrypoint"]
